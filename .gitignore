@@ -1,10 +1,23 @@
-build/
-imgui.ini
-settings.ini
-.vscode/
+# Visual Studio
 .vs/
-.cap
+*.VC.db
+*.opendb
+ipch/
+
+# Build/CMake
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+cmake-build-*/
+bin/
+obj/
+out/
+lib/
+
+# VS Code
+.vscode/
+
+# OS/Logs
 .DS_Store
-CMakeUserPresets.json
-.cache/
-.idea/
+Thumbs.db
+*.log
