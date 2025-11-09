@@ -27,6 +27,7 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
+#include <algorithm> // NEW
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -38,7 +39,6 @@
 
 #if defined( _MSC_VER ) && 0
 #include <crtdbg.h>
-
 static int MyAllocHook( int allocType, void* userData, size_t size, int blockType, long requestNumber,
 						const unsigned char* filename, int lineNumber )
 {
@@ -47,7 +47,6 @@ static int MyAllocHook( int allocType, void* userData, size_t size, int blockTyp
 	{
 		size += 0;
 	}
-
 	return 1;
 }
 #endif
@@ -58,6 +57,15 @@ static Sample* s_sample = nullptr;
 static bool s_rightMouseDown = false;
 static b2Vec2 s_clickPointWS = b2Vec2_zero;
 static float s_framebufferScale = 1.0f;
+
+// --- Gestion fenêtre/orientation ---
+static bool s_isPortrait = false;		 // false = paysage, true = portrait 1440x2560
+static int s_landscapeW = 2560;			 // cible paysage
+static int s_landscapeH = 1440;			 // cible paysage
+static int s_nativeW = 0, s_nativeH = 0; // résolution native moniteur
+static int s_monitorX = 0, s_monitorY = 0;
+static int s_refreshRate = 0; // NEW: Hz du moniteur
+static GLFWmonitor* s_primaryMonitor = nullptr;
 
 inline bool IsPowerOfTwo( int32_t x )
 {
@@ -129,6 +137,103 @@ static void RestartSample()
 	s_context.restart = false;
 }
 
+// ----------------------
+// Helpers plein écran
+// ----------------------
+static void GetPrimaryMonitorInfo()
+{
+	s_primaryMonitor = glfwGetPrimaryMonitor();
+	if ( !s_primaryMonitor )
+		return;
+
+	const GLFWvidmode* mode = glfwGetVideoMode( s_primaryMonitor );
+	if ( mode )
+	{
+		s_nativeW = mode->width;
+		s_nativeH = mode->height;
+		s_refreshRate = mode->refreshRate; // NEW
+	}
+	glfwGetMonitorPos( s_primaryMonitor, &s_monitorX, &s_monitorY );
+}
+
+// Choisit la taille paysage initiale : 2560×1440 si possible, sinon natif
+static void ComputeInitialLandscapeSize( int& outW, int& outH )
+{
+	if ( s_nativeW == 0 || s_nativeH == 0 )
+	{
+		outW = s_landscapeW;
+		outH = s_landscapeH;
+		return;
+	}
+	if ( s_nativeW >= s_landscapeW && s_nativeH >= s_landscapeH )
+	{
+		outW = s_landscapeW;
+		outH = s_landscapeH;
+	}
+	else
+	{
+		outW = s_nativeW;
+		outH = s_nativeH;
+	}
+}
+
+// Borderless "plein écran" fenêtré centré
+static void ApplyBorderless( GLFWwindow* window, int w, int h )
+{
+	if ( !s_primaryMonitor )
+		GetPrimaryMonitorInfo();
+
+	glfwSetWindowAttrib( window, GLFW_DECORATED, GLFW_FALSE );
+	glfwSetWindowAttrib( window, GLFW_RESIZABLE, GLFW_FALSE );
+#if defined( _WIN32 )
+	glfwSetWindowAttrib( window, GLFW_FLOATING, GLFW_TRUE );
+#endif
+
+	int x = s_monitorX;
+	int y = s_monitorY;
+	if ( s_nativeW > 0 && s_nativeH > 0 && ( w <= s_nativeW ) && ( h <= s_nativeH ) )
+	{
+		x = s_monitorX + ( s_nativeW - w ) / 2;
+		y = s_monitorY + ( s_nativeH - h ) / 2;
+	}
+
+	// NEW: passer le taux de rafraîchissement connu
+	glfwSetWindowMonitor( window, nullptr, x, y, w, h, s_refreshRate > 0 ? s_refreshRate : 0 );
+
+	s_context.camera.width = float( w );
+	s_context.camera.height = float( h );
+}
+
+// Applique l’orientation demandée avec fit-to-screen si nécessaire
+static void ApplyOrientation( GLFWwindow* window, bool portrait )
+{
+	int w = 0, h = 0;
+	if ( !portrait )
+	{
+		ComputeInitialLandscapeSize( w, h );
+	}
+	else
+	{
+		w = 1440;
+		h = 2560;
+	}
+
+	// Fit-to-screen si ça dépasse l’écran
+	if ( s_nativeW > 0 && s_nativeH > 0 && ( w > s_nativeW || h > s_nativeH ) )
+	{
+		const float sx = s_nativeW / float( w );
+		const float sy = s_nativeH / float( h );
+		const float k = std::min( sx, sy );
+		w = std::max( 1, int( w * k ) );
+		h = std::max( 1, int( h * k ) );
+	}
+
+	ApplyBorderless( window, w, h );
+}
+
+// ----------------------
+// ImGui / UI
+// ----------------------
 static void CreateUI( GLFWwindow* window, const char* glslVersion )
 {
 	IMGUI_CHECKVERSION();
@@ -294,6 +399,12 @@ static void KeyCallback( GLFWwindow* window, int key, int scancode, int action, 
 
 			case GLFW_KEY_TAB:
 				s_context.showUI = !s_context.showUI;
+				break;
+
+			// NEW: raccourci pro pour basculer l’orientation
+			case GLFW_KEY_F11:
+				s_isPortrait = !s_isPortrait;
+				ApplyOrientation( s_context.window, s_isPortrait );
 				break;
 
 			default:
@@ -477,6 +588,16 @@ static void UpdateUI()
 					glfwSetWindowShouldClose( s_context.window, GL_TRUE );
 				}
 
+				ImGui::Separator();
+
+				// NEW: bascule orientation depuis l’UI
+				bool portrait = s_isPortrait;
+				if ( ImGui::Checkbox( "Orientation Portrait 1440×2560", &portrait ) )
+				{
+					s_isPortrait = portrait;
+					ApplyOrientation( s_context.window, s_isPortrait );
+				}
+
 				ImGui::EndTabItem();
 			}
 
@@ -547,10 +668,7 @@ int main( int, char** )
 	_CrtSetReportMode( _CRT_WARN, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE );
 	_CrtSetReportFile( _CRT_WARN, _CRTDBG_FILE_STDOUT );
 	//_CrtSetAllocHook(MyAllocHook);
-
-// How to break at the leaking allocation, in the watch window enter this variable
-// and set it to the allocation number in {}. Do this at the first line in main.
-// {,,ucrtbased.dll}_crtBreakAlloc = <allocation number>
+	// {,,ucrtbased.dll}_crtBreakAlloc = <allocation number>
 #endif
 
 	// Install memory hooks
@@ -589,7 +707,10 @@ int main( int, char** )
 	b2Version version = b2GetVersion();
 	snprintf( buffer, 128, "Box2D Version %d.%d.%d", version.major, version.minor, version.revision );
 
-	if ( GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor() )
+	// Infos moniteur + content scale
+	GetPrimaryMonitorInfo();
+
+	if ( GLFWmonitor* primaryMonitor = s_primaryMonitor )
 	{
 #ifdef __APPLE__
 		glfwGetMonitorContentScale( primaryMonitor, &s_framebufferScale, &s_framebufferScale );
@@ -600,17 +721,12 @@ int main( int, char** )
 #endif
 	}
 
-	bool fullscreen = false;
-	if ( fullscreen )
-	{
-		s_context.window = glfwCreateWindow( 1920, 1080, buffer, glfwGetPrimaryMonitor(), nullptr );
-	}
-	else
-	{
-		s_context.window =
-			glfwCreateWindow( int( s_context.camera.width ), int( s_context.camera.height ), buffer, nullptr, nullptr );
-	}
+	// Création fenêtre (borderless) à la taille paysage initiale
+	int startW = 0, startH = 0;
+	ComputeInitialLandscapeSize( startW, startH );
 
+	// Crée une fenêtre "normale" puis passe en borderless via ApplyBorderless
+	s_context.window = glfwCreateWindow( startW, startH, buffer, nullptr, nullptr );
 	if ( s_context.window == nullptr )
 	{
 		fprintf( stderr, "Failed to open GLFW window.\n" );
@@ -619,6 +735,9 @@ int main( int, char** )
 	}
 
 	glfwMakeContextCurrent( s_context.window );
+
+	// VSync ON (non configurable)
+	glfwSwapInterval( 1 );
 
 	// Load OpenGL functions using glad
 	if ( !gladLoadGL() )
@@ -633,6 +752,9 @@ int main( int, char** )
 		const char* glslVersionString = (const char*)glGetString( GL_SHADING_LANGUAGE_VERSION );
 		printf( "OpenGL %s, GLSL %s\n", glVersionString, glslVersionString );
 	}
+
+	// Appliquer borderless plein écran (2560×1440 si possible, sinon natif)
+	ApplyBorderless( s_context.window, startW, startH );
 
 	glfwSetWindowSizeCallback( s_context.window, ResizeWindowCallback );
 	glfwSetKeyCallback( s_context.window, KeyCallback );
@@ -649,7 +771,7 @@ int main( int, char** )
 
 	glClearColor( 0.2f, 0.2f, 0.2f, 1.0f );
 
-	float frameTime = 0.0;
+	float frameTime = 0.0f;
 
 	while ( !glfwWindowShouldClose( s_context.window ) )
 	{
@@ -668,8 +790,8 @@ int main( int, char** )
 
 		int width, height;
 		glfwGetWindowSize( s_context.window, &width, &height );
-		s_context.camera.width = width;
-		s_context.camera.height = height;
+		s_context.camera.width = float( width );
+		s_context.camera.height = float( height );
 
 		int bufferWidth, bufferHeight;
 		glfwGetFramebufferSize( s_context.window, &bufferWidth, &bufferHeight );
@@ -677,14 +799,8 @@ int main( int, char** )
 
 		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
 
-		// s_context.draw.DrawBackground();
-
-		// double cursorPosX = 0, cursorPosY = 0;
-		// glfwGetCursorPos( s_context.window, &cursorPosX, &cursorPosY );
-		// ImGui_ImplGlfw_CursorPosCallback( s_context.window, cursorPosX / s_windowScale, cursorPosY / s_windowScale );
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
-		// ImGui_ImplGlfw_CursorPosCallback( s_context.window, cursorPosX / s_windowScale, cursorPosY / s_windowScale );
 
 		ImGuiIO& io = ImGui::GetIO();
 		io.DisplaySize.x = s_context.camera.width;
@@ -703,7 +819,7 @@ int main( int, char** )
 		s_sample->ResetText();
 
 		const SampleEntry& entry = g_sampleEntries[s_context.sampleIndex];
-		s_sample->DrawColoredTextLine(b2_colorYellow, "%s : %s", entry.category, entry.name );
+		s_sample->DrawColoredTextLine( b2_colorYellow, "%s : %s", entry.category, entry.name );
 
 		s_sample->Step();
 
@@ -739,7 +855,7 @@ int main( int, char** )
 
 		glfwPollEvents();
 
-		// Limit frame rate to 60Hz
+		// Limit frame rate to 60Hz (utile si VSync saute)
 		double time2 = glfwGetTime();
 		double targetTime = time1 + 1.0 / 60.0;
 		while ( time2 < targetTime )

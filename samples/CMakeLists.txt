@@ -99,6 +99,10 @@ set(BOX2D_SAMPLE_FILES
 	shader.h
 	stb_image_write.h
 	stb_truetype.h
+	pixel_art.cpp
+	pixel_art.h
+	sample_9_16.cpp
+    sample_9_16.h
 )
 
 add_executable(samples ${BOX2D_SAMPLE_FILES})
